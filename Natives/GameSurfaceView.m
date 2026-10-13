@@ -2,6 +2,7 @@
 #import "LauncherPreferences.h"
 #import "PLProfiles.h"
 #import "utils.h"
+#import "renderer_info.h"
 
 @interface GameSurfaceView()
 @end
@@ -17,7 +18,8 @@
 }
 
 + (Class)layerClass {
-    if (ame_renderer_from_name([PLProfiles resolveKeyForCurrentProfile:@"renderer"].UTF8String) == AME_RENDERER_ZINK) {
+    const char *renderer = [PLProfiles resolveKeyForCurrentProfile:@"renderer"].UTF8String;
+    if (renderer && ame_renderer_from_name(renderer) == AME_RENDERER_ZINK) {
         return CALayer.class;
     } else {
         return CAMetalLayer.class;
