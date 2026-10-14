@@ -118,7 +118,6 @@ int keycodeTable[UIKeyboardHIDUsageKeyboardRightGUI+1];
         for (int i = 0; i < key.characters.length; i++) {
             int keychar = [key.characters characterAtIndex:i];
             CallbackBridge_nativeSendCharMods(keychar, modifiers);
-            CallbackBridge_nativeSendChar(keychar);
         }
     }
 
