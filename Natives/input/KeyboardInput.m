@@ -1,7 +1,23 @@
 #import "KeyboardInput.h"
 #import "../utils.h"
+#import "../sdl3_hook.h"
+#import <GameController/GameController.h>
 
 #include "../glfw_keycodes.h"
+
+// Minecraft 26.3+ runs on SDL3, and SDL3 reads the hardware keyboard by itself (GCKeyboard).
+// Forwarding the same keys from here as well made every key arrive twice: Esc / E opened their
+// screen and closed it again right away, backspace deleted two characters, and so on.
+// SDL never creates text input by itself here, so characters are still sent from this file.
+static BOOL sdlHandlesHardwareKeys(void) {
+    if (!AmethystSDL3InputActive()) {
+        return NO;
+    }
+    if (@available(iOS 14.0, *)) {
+        return GCKeyboard.coalescedKeyboard != nil;
+    }
+    return NO;
+}
 
 @implementation KeyboardInput
 
@@ -105,18 +121,31 @@ int keycodeTable[UIKeyboardHIDUsageKeyboardRightGUI+1];
         modifiers |= GLFW_MOD_CONTROL;
     }
 
-    // send the keycode
-    int keycode = keycodeTable[key.keyCode];
-    if (keycode != 0) {
-        CallbackBridge_nativeSendKey(keycode, 0 /* scancode */, isDown, modifiers);
-    } else {
-        NSLog(@"KeyboardInput: Unhandled key %lu", (unsigned long)key.keyCode);
+    // send the keycode (keyCode is checked first, the table only covers the keyboard page)
+    UIKeyboardHIDUsage usage = key.keyCode;
+    int keycode = (usage >= 0 && usage <= UIKeyboardHIDUsageKeyboardRightGUI) ? keycodeTable[usage] : 0;
+    if (!sdlHandlesHardwareKeys()) {
+        if (keycode != 0) {
+            CallbackBridge_nativeSendKey(keycode, 0 /* scancode */, isDown, modifiers);
+        } else {
+            NSLog(@"KeyboardInput: Unhandled key %lu", (unsigned long)key.keyCode);
+        }
     }
 
+    // Cmd/Ctrl + key is a shortcut, not text (Cmd+V would paste and type a "v"), same as on desktop
+    BOOL isShortcut = (key.modifierFlags & (UIKeyModifierCommand | UIKeyModifierControl)) != 0;
+
     // key.characters.length < 11: skip sending characters if the string starts with UIKeyInput
-    if (isDown && key.characters.length < 11) {
-        for (int i = 0; i < key.characters.length; i++) {
-            int keychar = [key.characters characterAtIndex:i];
+    if (isDown && !isShortcut && key.characters.length < 11) {
+        for (NSUInteger i = 0; i < key.characters.length; i++) {
+            unichar keychar = [key.characters characterAtIndex:i];
+            // backspace, enter, tab, esc, delete and Apple's function-key characters are keys, not text
+            if (keychar < 0x20 || keychar == 0x7F || (keychar >= 0xF700 && keychar <= 0xF8FF)) {
+                continue;
+            }
+            // Send each character only once: nativeSendCharMods already falls back to the char
+            // callback (GLFW) and forwards to SDL3 (26.3+). Also calling nativeSendChar typed every
+            // character twice.
             CallbackBridge_nativeSendCharMods(keychar, modifiers);
         }
     }
