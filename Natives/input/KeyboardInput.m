@@ -19,6 +19,80 @@ static BOOL sdlHandlesHardwareKeys(void) {
     return NO;
 }
 
+// Key repeat: iPadOS reports a held hardware key only once (no repeated pressesBegan, and SDL3 gets
+// no repeats from GCKeyboard either), so holding a key in a text field typed a single letter.
+// While a screen is open (mouse not grabbed) a held key now repeats like on desktop: its characters
+// are sent again, backspace / delete / arrow keys are sent as repeated key presses.
+static const NSTimeInterval kKeyRepeatDelay = 0.4;
+static const NSTimeInterval kKeyRepeatInterval = 0.05;
+static NSTimer *keyRepeatTimer;
+static UIKeyboardHIDUsage keyRepeatUsage;
+static int keyRepeatKeycode;
+static char keyRepeatMods;
+static NSString *keyRepeatChars;
+
+static void stopKeyRepeat(void) {
+    [keyRepeatTimer invalidate];
+    keyRepeatTimer = nil;
+    keyRepeatChars = nil;
+}
+
+// the key-up can get lost (app switch, keyboard detached), so also check if the key is really still down
+static BOOL keyStillHeld(UIKeyboardHIDUsage usage) {
+    if (@available(iOS 14.0, *)) {
+        GCKeyboard *keyboard = GCKeyboard.coalescedKeyboard;
+        if (keyboard == nil) {
+            return NO;
+        }
+        GCControllerButtonInput *button = [keyboard.keyboardInput buttonForKeyCode:(GCKeyCode)usage];
+        return button == nil || button.isPressed;
+    }
+    return YES;
+}
+
+static void keyRepeatTick(void) {
+    if (isGrabbing || !keyStillHeld(keyRepeatUsage)) {
+        stopKeyRepeat();
+        return;
+    }
+    if (keyRepeatChars.length > 0) {
+        for (NSUInteger i = 0; i < keyRepeatChars.length; i++) {
+            CallbackBridge_nativeSendCharMods([keyRepeatChars characterAtIndex:i], keyRepeatMods);
+        }
+    } else {
+        // 2 = GLFW_REPEAT (SDL3: key down with the repeat flag). The old GLFW path gets a normal
+        // press (1) instead, so its stored key state stays "pressed"
+        CallbackBridge_nativeSendKey(keyRepeatKeycode, 0 /* scancode */, AmethystSDL3InputActive() ? 2 : 1, keyRepeatMods);
+    }
+}
+
+static BOOL isRepeatableEditKey(int keycode) {
+    switch (keycode) {
+        case GLFW_KEY_BACKSPACE:
+        case GLFW_KEY_DELETE:
+        case GLFW_KEY_DPAD_LEFT:
+        case GLFW_KEY_DPAD_RIGHT:
+        case GLFW_KEY_DPAD_UP:
+        case GLFW_KEY_DPAD_DOWN:
+            return YES;
+        default:
+            return NO;
+    }
+}
+
+static void startKeyRepeat(UIKeyboardHIDUsage usage, int keycode, NSString *chars, char mods) {
+    stopKeyRepeat();
+    keyRepeatUsage = usage;
+    keyRepeatKeycode = keycode;
+    keyRepeatChars = [chars copy];
+    keyRepeatMods = mods;
+    keyRepeatTimer = [NSTimer timerWithTimeInterval:kKeyRepeatInterval repeats:YES block:^(NSTimer *timer) {
+        keyRepeatTick();
+    }];
+    keyRepeatTimer.fireDate = [NSDate dateWithTimeIntervalSinceNow:kKeyRepeatDelay];
+    [NSRunLoop.mainRunLoop addTimer:keyRepeatTimer forMode:NSRunLoopCommonModes];
+}
+
 @implementation KeyboardInput
 
 int keycodeTable[UIKeyboardHIDUsageKeyboardRightGUI+1];
@@ -124,6 +198,12 @@ int keycodeTable[UIKeyboardHIDUsageKeyboardRightGUI+1];
     // send the keycode (keyCode is checked first, the table only covers the keyboard page)
     UIKeyboardHIDUsage usage = key.keyCode;
     int keycode = (usage >= 0 && usage <= UIKeyboardHIDUsageKeyboardRightGUI) ? keycodeTable[usage] : 0;
+
+    // any new key press ends the current repeat (like on desktop), and so does releasing the held key
+    if (isDown || usage == keyRepeatUsage) {
+        stopKeyRepeat();
+    }
+
     if (!sdlHandlesHardwareKeys()) {
         if (keycode != 0) {
             CallbackBridge_nativeSendKey(keycode, 0 /* scancode */, isDown, modifiers);
@@ -136,6 +216,7 @@ int keycodeTable[UIKeyboardHIDUsageKeyboardRightGUI+1];
     BOOL isShortcut = (key.modifierFlags & (UIKeyModifierCommand | UIKeyModifierControl)) != 0;
 
     // key.characters.length < 11: skip sending characters if the string starts with UIKeyInput
+    NSMutableString *typed = [NSMutableString string];
     if (isDown && !isShortcut && key.characters.length < 11) {
         for (NSUInteger i = 0; i < key.characters.length; i++) {
             unichar keychar = [key.characters characterAtIndex:i];
@@ -147,7 +228,13 @@ int keycodeTable[UIKeyboardHIDUsageKeyboardRightGUI+1];
             // callback (GLFW) and forwards to SDL3 (26.3+). Also calling nativeSendChar typed every
             // character twice.
             CallbackBridge_nativeSendCharMods(keychar, modifiers);
+            [typed appendString:[NSString stringWithCharacters:&keychar length:1]];
         }
+    }
+
+    // keep repeating while the key is held, only in screens (chat, signs, ...), never in-game
+    if (isDown && !isShortcut && !isGrabbing && (typed.length > 0 || isRepeatableEditKey(keycode))) {
+        startKeyRepeat(usage, keycode, typed, modifiers);
     }
 
     return keycode != 0 || isDown;
