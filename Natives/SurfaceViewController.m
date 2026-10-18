@@ -693,11 +693,15 @@ static GameSurfaceView* pojavWindow;
         };
     }
 
+    // Minecraft 26.3+ (SDL3) reads the mouse wheel / trackpad scrolling itself, sending it from here
+    // as well made every scroll count twice (hotbar jumped two slots)
     mouse.mouseInput.scroll.xAxis.valueChangedHandler = ^(GCControllerAxisInput * _Nonnull axis, float value) {
+        if (AmethystSDL3InputActive()) return;
         // Workaround MC-121772 (macOS/iOS feature)
         CallbackBridge_nativeSendScroll(value, value);
     };
     mouse.mouseInput.scroll.yAxis.valueChangedHandler = ^(GCControllerAxisInput * _Nonnull axis, float value) {
+        if (AmethystSDL3InputActive()) return;
         // Workaround MC-121772 (macOS/iOS feature)
         CallbackBridge_nativeSendScroll(-value, -value);
     };
