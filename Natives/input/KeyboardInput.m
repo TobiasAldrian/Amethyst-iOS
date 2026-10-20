@@ -21,8 +21,9 @@ static BOOL sdlHandlesHardwareKeys(void) {
 
 // Key repeat: iPadOS reports a held hardware key only once (no repeated pressesBegan, and SDL3 gets
 // no repeats from GCKeyboard either), so holding a key in a text field typed a single letter.
-// While a screen is open (mouse not grabbed) a held key now repeats like on desktop: its characters
-// are sent again, backspace / delete / arrow keys are sent as repeated key presses.
+// While a screen is open (mouse not grabbed) a held key now repeats like on desktop: the key press is
+// repeated (e.g. Q in the inventory keeps dropping items, backspace keeps deleting) and its characters
+// are typed again.
 static const NSTimeInterval kKeyRepeatDelay = 0.4;
 static const NSTimeInterval kKeyRepeatInterval = 0.05;
 static NSTimer *keyRepeatTimer;
@@ -55,14 +56,14 @@ static void keyRepeatTick(void) {
         stopKeyRepeat();
         return;
     }
-    if (keyRepeatChars.length > 0) {
-        for (NSUInteger i = 0; i < keyRepeatChars.length; i++) {
-            CallbackBridge_nativeSendCharMods([keyRepeatChars characterAtIndex:i], keyRepeatMods);
-        }
-    } else {
-        // 2 = GLFW_REPEAT (SDL3: key down with the repeat flag). The old GLFW path gets a normal
-        // press (1) instead, so its stored key state stays "pressed"
+    // key part first, same order as on desktop. Text fields ignore it for letters and take the characters.
+    // 2 = GLFW_REPEAT (SDL3: key down with the repeat flag). The old GLFW path gets a normal
+    // press (1) instead, so its stored key state stays "pressed"
+    if (keyRepeatKeycode != 0) {
         CallbackBridge_nativeSendKey(keyRepeatKeycode, 0 /* scancode */, AmethystSDL3InputActive() ? 2 : 1, keyRepeatMods);
+    }
+    for (NSUInteger i = 0; i < keyRepeatChars.length; i++) {
+        CallbackBridge_nativeSendCharMods([keyRepeatChars characterAtIndex:i], keyRepeatMods);
     }
 }
 
